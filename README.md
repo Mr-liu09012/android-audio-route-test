@@ -1,23 +1,53 @@
-# Audio Route Test（Android 原生）
+# TRTC Native Call（Android 原生双人通话）
 
-一个尽量小的 Android 原生测试 App，用来验证：
+目标：两个人异地，用 Android 原生 TRTC 通话，并保持：
 
-- 输入：手机内置麦克风（`AudioRecord` + `setPreferredDevice`）；
-- 输出：蓝牙 A2DP / 指定 `AudioTrack` 输出（`setPreferredDevice`）；
-- 实际路由：`getRoutedDevice()` 读回输入/输出设备；
-- 模式：
-  - 麦克风回环：内置麦克风 -> 所选输出；
-  - 440Hz 测试音：只测输出，不碰麦克风。
+- 输入：手机内置麦克风；
+- 输出：蓝牙 A2DP；
+- 不经过 TRTC 内部播放器，避免被通信模式带回手机扬声器。
 
-它绕开浏览器和 TRTC，直接看 **Android 音频策略**能不能把“内置麦克风 + 蓝牙 A2DP 输出”拆开。
+## 核心设计
 
-> 这个工程没有在本次会话中编译或运行。当前环境没有 Android SDK / JDK。  
-> 需要你用 Android Studio 打开并构建 APK，或者安装 JDK 17 + Android SDK 后用 Gradle 构建。
+普通 TRTC 通话会让 SDK 自己打开音频采集和播放，Android 可能把播放切到通信路由（扬声器/HFP）。
 
-## 工程结构
+这个 App 改成：
 
 ```text
-android-audio-route-test/
+AudioRecord（内置麦克风，setPreferredDevice）
+  → TRTCCloud.sendCustomAudioData()
+  → TRTC 云端
+  → TRTCCloud.getCustomAudioRenderingFrame()
+  → AudioTrack（USAGE_MEDIA，setPreferredDevice = 蓝牙 A2DP）
+```
+
+关键 API：
+
+- `enableCustomAudioCapture(true)`
+- `enableCustomAudioRendering(true)`（必须在 `enterRoom` 前）
+- `sendCustomAudioData(TRTCAudioFrame)`
+- `getCustomAudioRenderingFrame(TRTCAudioFrame)`
+- `setPreferredDevice()` + `getRoutedDevice()`
+
+这样 TRTC 只负责房间/信令/传输，音频设备由原生层控制。
+
+## 与 Web 方案的区别
+
+Web/TRTC Web 失败的原因：
+
+- 浏览器没有 `HTMLMediaElement.setSinkId`；
+- `AudioContext.setSinkId` 只能 `default`；
+- TRTC Web 不能按 deviceId 选 A2DP。
+
+这个 App 直接在 Android 原生层创建 `AudioTrack`，所以能沿用你已验证成功的路由：
+
+```text
+内置麦克风 + 蓝牙 A2DP
+```
+
+## 文件
+
+```text
+android-trtc-call/
 ├── settings.gradle.kts
 ├── build.gradle.kts
 ├── gradle.properties
@@ -25,106 +55,83 @@ android-audio-route-test/
 │   ├── build.gradle.kts
 │   └── src/main/
 │       ├── AndroidManifest.xml
-│       └── java/com/example/audioroutetest/MainActivity.java
+│       └── java/com/example/trtcnativecall/MainActivity.java
+├── .github/workflows/build-apk.yml
 └── README.md
 ```
 
-没有 AndroidX、没有第三方依赖，只有一个 `Activity` 和 Java 代码。
+依赖：
+
+```gradle
+implementation("com.tencent.liteav:LiteAVSDK_TRTC:latest.release")
+```
 
 ## 构建 APK
 
-### 方式 A：Android Studio（推荐）
+### Android Studio
 
-1. 安装 Android Studio（带 Android SDK）。
-2. `File -> Open`，选择 `android-audio-route-test` 文件夹。
-3. 等待 Gradle Sync。
-   - 如果提示找不到 Gradle wrapper，选择使用本地 Gradle 8.9，或在已安装 Gradle 的情况下执行：
-     `gradle wrapper --gradle-version 8.9`
+1. 安装 Android Studio。
+2. `File -> Open` 选择 `android-trtc-call`。
+3. Gradle Sync。
 4. `Build -> Build Bundle(s) / APK(s) -> Build APK(s)`。
-5. APK 在：
+5. APK：
    ```text
    app/build/outputs/apk/debug/app-debug.apk
    ```
-6. 把 APK 传到手机安装。需要允许“安装未知来源应用”。
 
-### 方式 B：命令行（如果已有 JDK 17 + Android SDK）
+### GitHub Actions
 
-```bash
-cd android-audio-route-test
-
-# 如果已有 Gradle 8.9+：
-gradle wrapper --gradle-version 8.9
-./gradlew assembleDebug
-```
-
-Windows：
-
-```powershell
-gradle wrapper --gradle-version 8.9
-.\gradlew.bat assembleDebug
-```
-
-APK 路径同上。
-
-### 方式 C：GitHub Actions 云构建（不用本地 Android SDK）
-
-工程里已经带了 `.github/workflows/build-apk.yml`：
-
-1. 把整个 `android-audio-route-test` 推到一个 GitHub 仓库；
-2. 打开仓库的 **Actions → Build Android APK → Run workflow**；
-3. 构建完成后，在该次运行页面底部下载 artifact：
-   `audio-route-test-debug-apk`；
+1. 把整个文件夹推到 GitHub 仓库。
+2. Actions → `Build Android APK` → Run workflow。
+3. 下载 artifact `trtc-native-call-debug-apk`。
 4. 解压得到 `app-debug.apk`。
 
-这条路不需要你本地安装 Android Studio，但需要一个 GitHub 账号和网络。
+## 测试：手机 + 电脑（推荐）
 
-## 手机测试步骤
+手机装原生 App，电脑用现有的 [TRTC Web 测试页](../trtc-meeting-test/index.html) 作为另一端。
 
-1. 连接蓝牙耳机；在系统蓝牙设置里确认：
-   - 媒体音频开启；
-   - 通话音频先保持开启（做对比测试）。
-2. 打开 App，授予：
-   - 麦克风权限；
-   - 附近的设备/蓝牙权限（Android 12+）。
-3. 点「刷新设备」。
-4. 输入选择：
-   - `内置麦克风`（Built-in Mic）；
-   - 音源选 `MIC`。
-5. 输出选择：
-   - `蓝牙 A2DP`；
-   - 如果没有 A2DP，再试 `蓝牙 SCO/HFP`。
-6. 先测「440Hz 测试音」：
-   - 只验证输出，不碰麦克风；
-   - 听声音从哪里出来。
-7. 再测「麦克风回环」：
-   - 戴耳机；
-   - 对手机麦克风说话、刮麦克风；
-   - 听耳机里是否有声音。
-8. 看「实际路由」：
-   - 输入实际：应该是内置麦克风；
-   - 输出实际：应该是蓝牙 A2DP。
-9. 如果实际路由和选择不一致，点「复制 JSON」或「分享 JSON」回传。
+1. 电脑打开 TRTC Web 测试页，填入：
+   - `SDKAppID`
+   - `RoomId`
+   - `UserId = pc`
+   - 电脑用户的 `UserSig`
+2. 电脑端选择「测试音 440Hz」或电脑麦克风，加入房间。
+3. 手机打开原生 App，填入：
+   - 同一个 `SDKAppID`
+   - 同一个 `RoomId`
+   - `UserId = phone_native`
+   - 手机用户的 `UserSig`
+4. 手机选择：
+   - 输入：`内置麦克风`
+   - 输出：`蓝牙 A2DP`
+5. 点「加入房间」。
+6. 看「实际路由」：
+   - 输入实际 = 内置麦克风；
+   - 输出实际 = 蓝牙 A2DP。
+7. 手机应听到电脑测试音，且只有蓝牙耳机出声。
+8. 对手机麦克风说话/刮麦克风，电脑端应看到远端音量变化。
+9. 用「复制 JSON」或「分享 JSON」回传报告。
 
-## 这个 App 能证明什么
+## 测试：两部手机
 
-- 如果：
-  - 输入实际 = 内置麦克风；
-  - 输出实际 = 蓝牙 A2DP；
-  - 耳机里只有蓝牙声音；
-  
-  说明 Android 原生层可以拆分，Web 方案失败是浏览器/TRTC 的限制。
+两个手机都装 App，使用同一个 `SDKAppID` / `RoomId`，不同 `UserId` / `UserSig`；各自选内置麦克风 + A2DP，加入同一房间即可。
 
-- 如果原生 App 也出现：
-  - 输出实际 = 内置扬声器；
-  - 或输入实际 = 蓝牙 SCO；
-  - 或蓝牙没有声音；
-  
-  说明这台手机的 Android 音频策略本身就不允许“内置麦克风 + 蓝牙 A2DP”同时工作。此时只能换有线/硬件方案。
+## 预期结果
+
+- 如果「实际输入 = 内置麦克风」「实际输出 = 蓝牙 A2DP」且耳机只有蓝牙声音：
+  → 原生双人通话方案成立。
+- 如果实际输出变回内置扬声器：
+  → TRTC 仍可能改了音频模式/路由；看报告 `routeChanges` 和 `actual`。
+- 如果实际输入变成蓝牙 SCO：
+  → 输入被 HFP 接管，需要进一步调整。
+- 如果 App 崩溃/进房失败：
+  → 看日志中的 `TRTC 错误`、`onEnterRoom result`、`startLocalAudio`。
 
 ## 注意事项
 
-- 「麦克风回环」会把麦克风声音送到输出，可能啸叫。请戴耳机、降低音量。
-- 不要同时开腾讯会议/TRTC/录音 App，避免音频焦点抢占。
-- `AudioTrack` 使用 `USAGE_MEDIA` 是为了偏向 A2DP；如果勾选「USAGE_VOICE_COMMUNICATION」，系统更可能走 HFP/扬声器，可用于对比。
-- `setPreferredDevice` 只是“偏好”，系统可以拒绝；所以必须看 `getRoutedDevice()` 的实际结果，不能只看返回值。
-- 小米/HyperOS 可能还有“音频分享/双设备音频”等设置，测试前先关闭。
+- 输出 `AudioTrack` 固定 `USAGE_MEDIA`；不要改成 `USAGE_VOICE_COMMUNICATION`。
+- 必须先连接蓝牙 A2DP，再打开 App/刷新设备。
+- 测试时关闭小米“音频分享/双设备音频”等功能。
+- `UserSig` 只在本页内存，不写入报告；不要把 `SecretKey` 放进 APK。
+- 测试完成后点「离开房间」，避免持续占用麦克风/蓝牙。
+- 当前工程没有在本环境编译；需要 Android Studio 或 GitHub Actions 构建 APK。
