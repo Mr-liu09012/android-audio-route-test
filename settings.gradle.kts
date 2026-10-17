@@ -16,5 +16,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "AudioRouteTest"
+rootProject.name = "TrtcNativeCall"
 include(":app")
